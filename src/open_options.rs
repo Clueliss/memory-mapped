@@ -1,5 +1,28 @@
-use std::{fs, marker::PhantomData, path::Path};
+use super::MemoryMapped;
 
+use crate::RawMemoryMapping;
+use std::{fs, fs::File, marker::PhantomData, mem::MaybeUninit, os::unix::io::AsRawFd, path::Path};
+
+/// # Example
+///
+/// ```rust
+/// use std::mem::MaybeUninit;
+/// use memory_mapped::MemoryMapped;
+///
+/// let mapped: MemoryMapped<[MaybeUninit<u32>]> = MemoryMapped::options()
+///     .read(true)
+///     .write(true)
+///     .byte_offset(512)
+///     .byte_len(64)
+///     .open_slice("some_slice.bin")
+///     .unwrap();
+///
+/// let mapped = unsafe { mapped.assume_init() };
+///
+/// for x in mapped {
+///     println!("{x}");
+/// }
+/// ```
 pub struct OpenOptions<T: ?Sized> {
     read: bool,
     write: bool,
@@ -50,6 +73,10 @@ impl<T: ?Sized> OpenOptions<T> {
 
         opts
     }
+
+    fn with_shared(&self, shared: bool) -> Self {
+        Self { shared, ..*self }
+    }
 }
 
 impl<T: ?Sized> OpenOptions<T> {
@@ -95,16 +122,6 @@ impl<T: ?Sized> OpenOptions<T> {
         self.byte_len = byte_len;
         self
     }
-
-    pub fn open<P: AsRef<Path>>(&self, path: P) -> std::io::Result<super::MemoryMapped<T>> {
-        super::MemoryMapped::open_(path, self)
-    }
-
-    /// # Safety
-    /// caller must ensure that the underlying file is not mapped as shared elsewhere
-    pub unsafe fn open_shared<P: AsRef<Path>>(&self, path: P) -> std::io::Result<super::MemoryMapped<T>> {
-        super::MemoryMapped::open_(path, &Self { shared: true, ..*self })
-    }
 }
 
 impl<T> OpenOptions<[T]> {
@@ -116,5 +133,90 @@ impl<T> OpenOptions<[T]> {
     pub fn len(&mut self, len: usize) -> &mut Self {
         self.byte_len = len * std::mem::size_of::<T>();
         self
+    }
+}
+
+impl<T> OpenOptions<T> {
+    pub fn open<P: AsRef<Path>>(&self, path: P) -> std::io::Result<MemoryMapped<MaybeUninit<T>>> {
+        let f = self.get_fs_open_options().open(path)?;
+        self.open_from_file(&f)
+    }
+
+    pub fn open_from_file(&self, f: &File) -> std::io::Result<MemoryMapped<MaybeUninit<T>>> {
+        let opts = Self {
+            byte_len: if self.byte_len == 0 {
+                f.metadata()?.len() as usize - self.byte_offset
+            } else {
+                self.byte_len
+            },
+            ..*self
+        };
+
+        Ok(RawMemoryMapping::open(f.as_raw_fd(), &opts)?.into())
+    }
+
+    pub fn open_from_fd<F: AsRawFd>(&self, f: &F) -> std::io::Result<MemoryMapped<MaybeUninit<T>>> {
+        Ok(RawMemoryMapping::open(f.as_raw_fd(), self)?.into())
+    }
+
+    /// # Safety
+    /// - caller must ensure that the the segment resulting from this call does not overlap with any other segment mapped as shared
+    /// - called must ensure that the mapped memory contains a properly initialized object of type `T`
+    pub unsafe fn open_shared<P: AsRef<Path>>(&self, path: P) -> std::io::Result<MemoryMapped<MaybeUninit<T>>> {
+        self.with_shared(true).open(path)
+    }
+
+    /// # Safety
+    /// see [`memory_mapped::OptionOptions::open_shared`]
+    pub unsafe fn open_shared_from_file(&self, f: &File) -> std::io::Result<MemoryMapped<MaybeUninit<T>>> {
+        self.with_shared(true).open_from_file(f)
+    }
+
+    /// # Safety
+    /// see [`memory_mapped::OptionOptions::open_shared`]
+    pub unsafe fn open_shared_from_fd<F: AsRawFd>(&self, fd: &F) -> std::io::Result<MemoryMapped<MaybeUninit<T>>> {
+        self.with_shared(true).open_from_fd(fd)
+    }
+}
+
+impl<T> OpenOptions<[T]> {
+    pub fn open_slice<P: AsRef<Path>>(&self, path: P) -> std::io::Result<MemoryMapped<[MaybeUninit<T>]>> {
+        let f = self.get_fs_open_options().open(path)?;
+        self.open_slice_from_file(&f)
+    }
+
+    pub fn open_slice_from_file(&self, f: &File) -> std::io::Result<MemoryMapped<[MaybeUninit<T>]>> {
+        let opts = Self {
+            byte_len: if self.byte_len == 0 {
+                f.metadata()?.len() as usize - self.byte_offset
+            } else {
+                self.byte_len
+            },
+            ..*self
+        };
+
+        Ok(RawMemoryMapping::open(f.as_raw_fd(), &opts)?.into())
+    }
+
+    pub fn open_slice_from_fd<F: AsRawFd>(&self, f: &F) -> std::io::Result<MemoryMapped<[MaybeUninit<T>]>> {
+        Ok(RawMemoryMapping::open(f.as_raw_fd(), self)?.into())
+    }
+
+    /// # Safety
+    /// caller must ensure that the the segment resulting from this call does not overlap with any other segment mapped as shared
+    pub unsafe fn open_shared_slice<P: AsRef<Path>>(&self, path: P) -> std::io::Result<MemoryMapped<[MaybeUninit<T>]>> {
+        self.with_shared(true).open_slice(path)
+    }
+
+    /// # Safety
+    /// see [`memory_mapped::OptionOptions::open_shared_slice`]
+    pub unsafe fn open_shared_slice_from_file(&self, f: &File) -> std::io::Result<MemoryMapped<[MaybeUninit<T>]>> {
+        self.with_shared(true).open_slice_from_file(f)
+    }
+
+    /// # Safety
+    /// see [`memory_mapped::OptionOptions::open_shared_slice`]
+    pub unsafe fn open_shared_slice_from_fd<F: AsRawFd>(&self, fd: &F) -> std::io::Result<MemoryMapped<[MaybeUninit<T>]>> {
+        self.with_shared(true).open_slice_from_fd(fd)
     }
 }
