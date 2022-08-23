@@ -42,6 +42,9 @@ pub struct IntoIter<T> {
     cur_ix: usize,
 }
 
+unsafe impl<T: ?Sized> Sync for MemoryMapped<T> {}
+unsafe impl<T: ?Sized> Send for MemoryMapped<T> {}
+
 impl<T: ?Sized> Drop for MemoryMapped<T> {
     fn drop(&mut self) {
         self.mapping.close();
