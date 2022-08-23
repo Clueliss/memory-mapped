@@ -65,6 +65,10 @@ impl<T: ?Sized> MemoryMapped<T> {
     pub fn options() -> OpenOptions<T> {
         OpenOptions::new()
     }
+
+    pub fn segment_byte_len(&self) -> usize {
+        self.mapping.segment_byte_len()
+    }
 }
 
 impl<T> MemoryMapped<MaybeUninit<T>> {
